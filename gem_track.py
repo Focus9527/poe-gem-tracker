@@ -7,14 +7,13 @@ from bs4 import BeautifulSoup
 st.set_page_config(page_title="PoE Mirage 轉換寶石工具", page_icon="💎", layout="wide")
 
 st.title("💎 PoE Mirage 賽季：轉換寶石即時價格")
-st.caption("自動同步 PoEDB 中文翻譯與顏色屬性")
+st.caption("同步自 PoEDB (Skill_Gems) 中文翻譯與屬性顏色")
 
-# --- 1. 自動從 PoEDB 抓取對照表 (強化解析版) ---
+# --- 1. 從 PoEDB Skill_Gems 總表抓取對照表 ---
 @st.cache_data(ttl=86400)
 def get_poedb_mapping():
-    # 針對轉換寶石專用頁面抓取，結構最穩定
-    url = "https://poedb.tw/tw/Transfigured_Gems"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    url = "https://poedb.tw/tw/Skill_Gems"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     
     gem_map = {}
     try:
@@ -22,25 +21,27 @@ def get_poedb_mapping():
         resp.encoding = 'utf-8'
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 尋找所有 <a> 標籤，這類連結通常包含中英文資訊
-        # PoEDB 的結構中，data-en 屬性存放英文，text 存放中文
-        for link in soup.find_all('a', {'data-en': True}):
+        # 在 Skill_Gems 頁面中，所有的寶石連結都有 data-en 屬性
+        # 我們直接抓取所有具備 data-en 的 <a> 標籤
+        for link in soup.find_all('a', attrs={'data-en': True}):
             en_name = link.get('data-en')
             zh_name = link.get_text().strip()
             
-            # 排除非轉換寶石的雜項
+            # 只要是轉換寶石 (包含 " of ")
             if " of " in en_name:
-                # 判定顏色：檢查該行 (tr) 或連結的 class
-                # 根據 PoEDB 慣例，不同屬性寶石會有不同 CSS class 或鄰近文字
-                parent_row = link.find_parent('tr')
+                # 判定顏色：根據 PoEDB 的 CSS Class 或父層結構
+                # 力量寶石通常在特定的 td 或有對應的文字
+                parent_td = link.find_parent('td')
                 color_icon = "⚪"
                 
-                if parent_row:
-                    row_text = parent_row.get_text()
-                    # 依據標籤內容判定
-                    if "力量" in row_text or "火" in row_text: color_icon = "🔴"
-                    elif "敏捷" in row_text or "冰" in row_text: color_icon = "🟢"
-                    elif "智慧" in row_text or "電" in row_text: color_icon = "🔵"
+                if parent_td:
+                    # 往後找標籤欄位 (Tags)
+                    sibling_tds = parent_td.find_next_siblings('td')
+                    if sibling_tds:
+                        tags_text = sibling_tds[0].get_text()
+                        if "力量" in tags_text: color_icon = "🔴"
+                        elif "敏捷" in tags_text: color_icon = "🟢"
+                        elif "智慧" in tags_text: color_icon = "🔵"
                 
                 gem_map[en_name] = (zh_name, color_icon)
         
@@ -63,41 +64,45 @@ def fetch_ninja_data(mapping):
         
         # 執行配對
         def apply_info(en_name):
-            # 如果 mapping 裡沒找到，回傳 (原始名稱, ⚪)
+            # 優先從 mapping 找，找不到則顯示原名
             return mapping.get(en_name, (en_name, "⚪"))
             
         df['中文'], df['色'] = zip(*df['name'].map(apply_info))
         
-        # 整理輸出
+        # 整理輸出欄位
         res = df[['色', '中文', 'name', 'gemLevel', 'chaosValue', 'divineValue']]
-        res.columns = ['⚪', '寶石名稱', '英文原名', '等級', 'C', 'D']
+        res.columns = ['屬性', '寶石中文名稱', '英文原名', '等級', 'C', 'D']
         return res.sort_values('C', ascending=False)
     except:
         return pd.DataFrame()
 
 # --- 3. UI 主介面 ---
-with st.spinner('正在同步 PoEDB 翻譯中...'):
+with st.spinner('正在讀取 PoEDB 中文資料...'):
     mapping = get_poedb_mapping()
     df = fetch_ninja_data(mapping)
 
 if not df.empty:
-    # 搜尋過濾
-    search = st.text_input("🔍 搜尋名稱 (例如：冰霜新星 或 Ice Nova)", "")
+    # 側邊欄過濾
+    st.sidebar.header("過濾選項")
+    search = st.sidebar.text_input("🔍 搜尋 (中英文皆可)", "")
+    min_c = st.sidebar.number_input("最低 C 價", value=0)
     
-    # 篩選邏輯
-    mask = df['寶石名稱'].str.contains(search, case=False) | df['英文原名'].str.contains(search, case=False)
+    # 套用過濾
+    mask = (df['寶石中文名稱'].str.contains(search, case=False) | df['英文原名'].str.contains(search, case=False)) & (df['C'] >= min_c)
     final_df = df[mask]
 
     # 顯示表格
     st.dataframe(
         final_df,
         use_container_width=True,
-        height=700,
+        height=800,
         column_config={
-            "C": st.column_config.NumberColumn("混沌石 (C)", format="%d"),
-            "D": st.column_config.NumberColumn("神聖石 (D)", format="%.2f"),
+            "C": st.column_config.NumberColumn("價格 (C)", format="%d"),
+            "D": st.column_config.NumberColumn("價格 (D)", format="%.2f"),
         },
         hide_index=True
     )
+    
+    st.success(f"成功加載 {len(final_df)} 顆寶石資料")
 else:
-    st.warning("無法載入資料，請確認網路或 API 狀態。")
+    st.warning("無法載入資料，請確認 API 狀態。")
