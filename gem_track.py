@@ -69,4 +69,35 @@ def fetch_ninja_data(mapping):
         df['中文'], df['色'] = zip(*df['name'].map(apply_info))
         
         # 整理輸出
-        res = df[['色', '中文', 'name', 'gemLevel', 'chaosValue
+        res = df[['色', '中文', 'name', 'gemLevel', 'chaosValue', 'divineValue']]
+        res.columns = ['⚪', '寶石名稱', '英文原名', '等級', 'C', 'D']
+        return res.sort_values('C', ascending=False)
+    except:
+        return pd.DataFrame()
+
+# --- 3. UI 主介面 ---
+with st.spinner('正在同步 PoEDB 翻譯中...'):
+    mapping = get_poedb_mapping()
+    df = fetch_ninja_data(mapping)
+
+if not df.empty:
+    # 搜尋過濾
+    search = st.text_input("🔍 搜尋名稱 (例如：冰霜新星 或 Ice Nova)", "")
+    
+    # 篩選邏輯
+    mask = df['寶石名稱'].str.contains(search, case=False) | df['英文原名'].str.contains(search, case=False)
+    final_df = df[mask]
+
+    # 顯示表格
+    st.dataframe(
+        final_df,
+        use_container_width=True,
+        height=700,
+        column_config={
+            "C": st.column_config.NumberColumn("混沌石 (C)", format="%d"),
+            "D": st.column_config.NumberColumn("神聖石 (D)", format="%.2f"),
+        },
+        hide_index=True
+    )
+else:
+    st.warning("無法載入資料，請確認網路或 API 狀態。")
